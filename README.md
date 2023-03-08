@@ -1,1 +1,1 @@
-# spatial_econometrics
+# Spatial Econometrics
