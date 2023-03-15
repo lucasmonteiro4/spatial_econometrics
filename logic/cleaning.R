@@ -152,7 +152,7 @@ unique(full_data$iso3)
 st_geometry(bound_data)
 st_geometry(full_data)
 
-bound_geo <- st_geometry(bound_data)
+bound_geo <- st_geometry(full_data$geometry)
 bound_nb <- poly2nb(bound_geo)
 bound_cen <- st_coordinates(st_centroid(bound_geo))
 plot(bound_geo, lwd = 2)
@@ -160,18 +160,81 @@ plot(bound_nb, bound_cen, add = T, col = "dark green", lty = "dotted", lwd = 2)
 
 bound_4nnb <- knn2nb(knearneigh(bound_cen, 4))
 
-old_par <- par(mfrow = c(1,2), oma = c(0, 0, 0, 0), mar = c(0, 0, 1, 0))
-plot(bound_geo, lwd = 2)
-plot(bound_4nnb, bound_cen, add = T, col = "dark green", lty = "solid", lwd = 2)
+#old_par <- par(mfrow = c(1,2), oma = c(0, 0, 0, 0), mar = c(0, 0, 1, 0))
+plot(bound_geo, lwd = 1)
+par(new=TRUE)
+plot(bound_4nnb, bound_cen,lwd=.2, col="blue", cex = .5)
 title("K = 4")
 
 
-#plot(bound_4nnb, bound_cen,lwd=.2, col="blue", cex = .5)
 
 
 
 # Moran scatter plot 
-moran.test( full_data$immigrates, nb2listw(bound_4nnb))
 
-length(full_data$immigrates)
-length(nb2listw(bound_4nnb))
+moran.plot(full_data$immigrates, nb2listw(bound_4nnb),X_name = "Immigrates")
+
+# The middle east is very represented for countries with a high spatial autocorrelation 
+# concerning immigrates flow followed by South Korea.
+
+
+moran.plot(full_data$emigrates, nb2listw(bound_4nnb),X_name ="Emigrates")
+
+
+# New Zealand and Great Britain appear to be the countries with a high 
+# level of spatial autocorrelation concerning emigrates flow.
+
+
+# Moran test
+
+moran.test(full_data$immigrates, nb2listw(bound_4nnb)) # We reject the null hypothesis, 
+#there is spatial autocorrelation at the level of 5%.
+
+
+moran.test(full_data$emigrates, nb2listw(bound_4nnb)) # We also reject the null hypothesis, 
+# there is spatial autocorrelation at the level of 5%.
+
+
+# OLM model 
+
+## First model
+
+olm_1 <- lm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+            GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+            vulnerability, data = full_data)
+summary(olm_1)
+
+# We see that a lot of variables are not significantly different from 0 at the level of 5%.
+# The only variable which is is significant at this level is GDPpercapita_UN.
+
+# Interpretation of the variable GDPpercapita_UN : if we increase the level of GDPpercapita_UN
+# by one unit then the immigrates flow increase by 4.170e-07 unit.
+
+
+## Second model
+
+olm_2 <- lm(emigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+              GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+              vulnerability, data = full_data)
+summary(olm_2)
+
+# At the level of 5% only three variables are significantly different from 0 : deflactor, 
+# lifeexp, FD and conflictpercapita_UN.
+
+
+# Interpretation of the variable deflactor : if we increase the level of deflactor
+# by one unit then the immigrates flow increase by 3.977e-0 unit.
+
+# Interpretation of the variable FD : if we increase the level of FD
+# by one unit then the immigrates flow increase by -3.731e-02 unit.
+
+# Interpretation of the variable conflictpercapita : if we increase the level of conflictpercapita
+# by one unit then the immigrates flow increase by 3.846e+0.
+
+lm.morantest(olm_1, nb2listw(bound_4nnb))
+
+
+
+mp <- moran.plot(residuals(olm), nb2listw(bound_4nnb), pch = 19)
+
+
