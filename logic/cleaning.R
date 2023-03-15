@@ -2,6 +2,9 @@ library(sf)
 library(tidyverse)
 library("missForest")
 library(visdat)
+library(ggplot2)
+library(cartography)
+library(spdep)
 
 # files architecture
 #
@@ -120,7 +123,55 @@ length(unique(full_data$iso3))
 full_data$emigrates <- full_data$sum_out/full_data$population
 full_data$immigrates <- full_data$sum_in/full_data$population
 
-write.csv(full_data, file = "data/cleaned_data.csv")
-
 
 rm(bound_data, by_dest, by_orig, clean_bound, exp_data, migration_data, migration_data_rem, my_X, my_X_clean, pairs, total_flows, transform_bound, nom_vars)
+
+cor(full_data[, 4:14], full_data$emigrates)
+cor(full_data[, 4:14], full_data$immigrates)
+
+# Yes we see sign differences with the variables vulnerability, gdppercapita, deflactor and conflicts. This makes sense since there is an 
+#inverse relationship between these variables. 
+
+#Plot
+
+ggplot() +
+  geom_polygon(data = full_data, aes(fill = emigrates, x = as.numeric(substr(geo_point_2d, 10,20)), y = as.numeric(substr(geo_point_2d, 37,47)), group = iso3)) +
+  theme_void() +
+  coord_map()
+
+
+full_data$geo_point_2d[1]
+as.numeric(substr(full_data$geo_point_2d, 10,20))
+as.numeric(substr(full_data$geo_point_2d, 37,47))
+
+sort(full_data$iso3)
+
+unique(full_data$iso3)
+
+#Weight matrix
+st_geometry(bound_data)
+st_geometry(full_data)
+
+bound_geo <- st_geometry(bound_data)
+bound_nb <- poly2nb(bound_geo)
+bound_cen <- st_coordinates(st_centroid(bound_geo))
+plot(bound_geo, lwd = 2)
+plot(bound_nb, bound_cen, add = T, col = "dark green", lty = "dotted", lwd = 2)
+
+bound_4nnb <- knn2nb(knearneigh(bound_cen, 4))
+
+old_par <- par(mfrow = c(1,2), oma = c(0, 0, 0, 0), mar = c(0, 0, 1, 0))
+plot(bound_geo, lwd = 2)
+plot(bound_4nnb, bound_cen, add = T, col = "dark green", lty = "solid", lwd = 2)
+title("K = 4")
+
+
+#plot(bound_4nnb, bound_cen,lwd=.2, col="blue", cex = .5)
+
+
+
+# Moran scatter plot 
+moran.test( full_data$immigrates, nb2listw(bound_4nnb))
+
+length(full_data$immigrates)
+length(nb2listw(bound_4nnb))
