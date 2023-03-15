@@ -121,3 +121,6 @@ full_data$emigrates <- full_data$sum_out/full_data$population
 full_data$immigrates <- full_data$sum_in/full_data$population
 
 write.csv(full_data, file = "data/cleaned_data.csv")
+
+
+rm(bound_data, by_dest, by_orig, clean_bound, exp_data, migration_data, migration_data_rem, my_X, my_X_clean, pairs, total_flows, transform_bound, nom_vars)
