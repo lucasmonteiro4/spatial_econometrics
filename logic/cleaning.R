@@ -2,7 +2,12 @@ library(sf)
 library(tidyverse)
 library("missForest")
 library(visdat)
-
+library(ggplot2)
+library(cartography)
+library(spdep)
+library(sfdep)
+library(spatialreg)
+library(stargazer)
 # files architecture
 #
 # data
@@ -120,4 +125,193 @@ length(unique(full_data$iso3))
 full_data$emigrates <- full_data$sum_out/full_data$population
 full_data$immigrates <- full_data$sum_in/full_data$population
 
-write.csv(full_data, file = "data/cleaned_data.csv")
+
+rm(bound_data, by_dest, by_orig, clean_bound, exp_data, migration_data, migration_data_rem, my_X, my_X_clean, pairs, total_flows, transform_bound, nom_vars)
+
+cor(full_data[, 4:14], full_data$emigrates)
+cor(full_data[, 4:14], full_data$immigrates)
+
+# Yes we see sign differences with the variables vulnerability, gdppercapita, deflactor and conflicts. This makes sense since there is an 
+#inverse relationship between these variables. 
+
+#Plot
+
+ggplot() +
+  geom_polygon(data = full_data, aes(fill = emigrates, x = as.numeric(substr(geo_point_2d, 10,20)), y = as.numeric(substr(geo_point_2d, 37,47)), group = iso3)) +
+  theme_void() +
+  coord_map()
+
+
+full_data$geo_point_2d[1]
+as.numeric(substr(full_data$geo_point_2d, 10,20))
+as.numeric(substr(full_data$geo_point_2d, 37,47))
+
+sort(full_data$iso3)
+
+unique(full_data$iso3)
+
+#Weight matrix
+st_geometry(bound_data)
+st_geometry(full_data)
+
+bound_geo <- st_geometry(full_data$geometry)
+bound_nb <- poly2nb(bound_geo)
+bound_cen <- st_coordinates(st_centroid(bound_geo))
+plot(bound_geo, lwd = 2)
+plot(bound_nb, bound_cen, add = T, col = "dark green", lty = "dotted", lwd = 2)
+
+bound_4nnb <- knn2nb(knearneigh(bound_cen, 4))
+
+#old_par <- par(mfrow = c(1,2), oma = c(0, 0, 0, 0), mar = c(0, 0, 1, 0))
+plot(bound_geo, lwd = 1)
+par(new=TRUE)
+plot(bound_4nnb, bound_cen,lwd=.2, col="blue", cex = .5)
+title("K = 4")
+
+
+
+
+
+# Moran scatter plot 
+
+moran.plot(full_data$immigrates, nb2listw(bound_4nnb),X_name = "Immigrates")
+
+# The middle east is very represented for countries with a high spatial autocorrelation 
+# concerning immigrates flow followed by South Korea.
+
+
+moran.plot(full_data$emigrates, nb2listw(bound_4nnb),X_name ="Emigrates")
+
+
+# New Zealand and Great Britain appear to be the countries with a high 
+# level of spatial autocorrelation concerning emigrates flow.
+
+
+# Moran test
+
+moran.test(full_data$immigrates, nb2listw(bound_4nnb)) # We reject the null hypothesis, 
+#there is spatial autocorrelation at the level of 5%.
+
+
+moran.test(full_data$emigrates, nb2listw(bound_4nnb)) # We also reject the null hypothesis, 
+# there is spatial autocorrelation at the level of 5%.
+
+
+# OLM model 
+
+## First model
+
+olm_1 <- lm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+            GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+            vulnerability, data = full_data)
+summary(olm_1)
+
+# We see that a lot of variables are not significantly different from 0 at the level of 5%.
+# The only variable which is is significant at this level is GDPpercapita_UN.
+
+# Interpretation of the variable GDPpercapita_UN : if we increase the level of GDPpercapita_UN
+# by one unit then the immigrates flow increase by 4.170e-07 unit.
+
+
+## Second model
+
+olm_2 <- lm(emigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+              GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+              vulnerability, data = full_data)
+summary(olm_2)
+
+# At the level of 5% only three variables are significantly different from 0 : deflactor, 
+# lifeexp, FD and conflictpercapita_UN.
+
+
+# Interpretation of the variable deflactor : if we increase the level of deflactor
+# by one unit then the immigrates flow increase by 3.977e-0 unit.
+
+# Interpretation of the variable FD : if we increase the level of FD
+# by one unit then the immigrates flow increase by -3.731e-02 unit.
+
+# Interpretation of the variable conflictpercapita : if we increase the level of conflictpercapita
+# by one unit then the immigrates flow increase by 3.846e+0.
+
+# We test the spatial autocorrelation in the residuals
+
+lm.morantest(olm_1, nb2listw(bound_4nnb))
+
+# There is the presence of spatial autocorrelation in the residuals.
+
+#
+
+mp <- moran.plot(residuals(olm_1), nb2listw(bound_4nnb), pch = 19)
+
+index_class <- mp[, c("labels", "x", "wx")]
+
+index_class$class <- ifelse((index_class$x > 0 & index_class$wx > 0), "HH",
+                            ifelse((index_class$x < 0 & index_class$wx > 0), "LH",
+                                   ifelse((index_class$x > 0 & index_class$wx < 0), "HL", "LL")))
+
+
+
+# Location of the countries by HH, HL, LL, LH.
+
+full_data$labels <- seq(1, 228, 1)
+index_class$labels <- as.numeric(index_class$labels)
+color_data <- merge(full_data, index_class, by = "labels")
+color_data$class <- as.factor(color_data$class)
+plot(st_geometry(color_data$geometry), lwd = 2, col = color_data$class)
+legend("bottomleft", legend=c("HH", "HL", "LL", "LH"),
+       fill=c("black", "red", "blue", "green"), cex=0.8)
+
+# Testing strategy
+# We have already test for spatial autocorrelation in OLM
+# model so we test it against SLX model
+
+# We see that only politicalstability is significant concerning the variable itself and the lag 
+# but the SLX model seems more interesting given the previous Moran test and the presence of a lag 
+# on politicalstability. We estimate a model with a lag on the dependent variable and the error term. 
+
+# SLX model
+slx_1 <- lm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+              GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+              vulnerability, data = full_data)
+
+slx_2 <- spatialreg::lmSLX(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                 GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                 vulnerability, data = full_data, 
+               listw = nb2listw(bound_4nnb))
+# SEM model
+sem <- spatialreg::errorsarlm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                    GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                    vulnerability, data = full_data, 
+                  listw = nb2listw(bound_4nnb))
+# Lag model
+lagm <- spatialreg::lagsarlm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                   GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                   vulnerability, data = full_data, 
+                 listw = nb2listw(bound_4nnb))
+# SDM model
+durb <- spatialreg::lagsarlm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                   GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                   vulnerability, data = full_data, 
+                 listw = nb2listw(bound_4nnb), Durbin = T)
+
+
+##
+
+
+### PARTIE 3
+
+new_data <- merge(migration_data, my_X, by.x = "orig", by.y = "CountryCode", suffixes = c("","_O"))
+new_data <- merge(new_data, my_X, by.x = "dest", by.y = "CountryCode", suffixes = c("_O","_D"))
+
+N <- nrow(new_data)
+g <- numeric(N)
+dist_mat <- st_distance(world, world, by_element = F)
+dimnames(dist_mat) <- list(world$iso3, world$iso3)
+data_od$dist <- 0
+
+for (k in 1:nrow(data_od)) {
+  data_od[k, "dist"] <- dist_mat[data_od[k, "dest"], data_od[k, "orig"]]
+}
+save(data_od, file = "data_od.RData")
+
+new_data[new_data$orig %in% full_data$iso3,]
