@@ -5,7 +5,10 @@ library(visdat)
 library(ggplot2)
 library(cartography)
 library(spdep)
-
+library(sfdep)
+library(spatialreg)
+library(stargazer)
+library(gravity)
 # files architecture
 #
 # data
@@ -36,6 +39,7 @@ plot(st_geometry(bound_data), main="CRS ESRI:54030 Robinson")
 
 # 1.3 Explanatory variables at country level
 load("data/explanatory.RData")
+
 
 nom_vars <- c("CountryCode", "deflactor", "lifeexp", "dummyEarthquake", "population",
               "dummyStorm", "GDPpercapita_UN", "FD", "conflictpercapita", "politicalstability", 
@@ -121,6 +125,7 @@ full_data <- merge(exp_data, clean_bound, by = "iso3")
 length(unique(full_data$iso3))
 
 full_data$emigrates <- full_data$sum_out/full_data$population
+
 full_data$immigrates <- full_data$sum_in/full_data$population
 
 
@@ -128,6 +133,10 @@ rm(bound_data, by_dest, by_orig, clean_bound, exp_data, migration_data, migratio
 
 cor(full_data[, 4:14], full_data$emigrates)
 cor(full_data[, 4:14], full_data$immigrates)
+cor(full_data[, 4:14], full_data$lifeexp) #FD et GDPpercapita_UN
+cor(full_data[, 4:14], full_data$dummystorm)
+
+
 
 # Yes we see sign differences with the variables vulnerability, gdppercapita, deflactor and conflicts. This makes sense since there is an 
 #inverse relationship between these variables. 
@@ -231,10 +240,135 @@ summary(olm_2)
 # Interpretation of the variable conflictpercapita : if we increase the level of conflictpercapita
 # by one unit then the immigrates flow increase by 3.846e+0.
 
+# We test the spatial autocorrelation in the residuals
+
 lm.morantest(olm_1, nb2listw(bound_4nnb))
 
+# There is the presence of spatial autocorrelation in the residuals.
+
+#
+
+mp <- moran.plot(residuals(olm_1), nb2listw(bound_4nnb), pch = 19)
+
+index_class <- mp[, c("labels", "x", "wx")]
+
+index_class$class <- ifelse((index_class$x > 0 & index_class$wx > 0), "HH",
+                            ifelse((index_class$x < 0 & index_class$wx > 0), "LH",
+                                   ifelse((index_class$x > 0 & index_class$wx < 0), "HL", "LL")))
 
 
-mp <- moran.plot(residuals(olm), nb2listw(bound_4nnb), pch = 19)
+
+# Location of the countries by HH, HL, LL, LH.
+
+full_data$labels <- seq(1, 228, 1)
+index_class$labels <- as.numeric(index_class$labels)
+color_data <- merge(full_data, index_class, by = "labels")
+color_data$class <- as.factor(color_data$class)
+plot(st_geometry(color_data$geometry), lwd = 2, col = color_data$class)
+legend("bottomleft", legend=c("HH", "HL", "LL", "LH"),
+       fill=c("black", "red", "blue", "green"), cex=0.8)
+
+# Testing strategy
+# We have already test for spatial autocorrelation in OLM
+# model so we test it against SLX model
+
+# We see that only politicalstability is significant concerning the variable itself and the lag 
+# but the SLX model seems more interesting given the previous Moran test and the presence of a lag 
+# on politicalstability. We estimate a model with a lag on the dependent variable and the error term. 
+
+# SLX model
+slx_1 <- lm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+              GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+              vulnerability, data = full_data)
+
+slx_2 <- spatialreg::lmSLX(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                 GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                 vulnerability, data = full_data, 
+               listw = nb2listw(bound_4nnb))
+summary(slx_2)
+# SEM model
+
+full_data$pop_mod <- full_data$population / 1000000
 
 
+sem <- spatialreg::errorsarlm(immigrates ~ deflactor + lifeexp + dummyEarthquake + pop_mod + dummyStorm +
+                    GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                    vulnerability, data = full_data, 
+                  listw = nb2listw(bound_4nnb))
+# Lag model
+lagm <- spatialreg::lagsarlm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                   GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                   vulnerability, data = full_data, 
+                 listw = nb2listw(bound_4nnb))
+# SDM model
+durb <- spatialreg::lagsarlm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                   GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                   vulnerability, data = full_data, 
+                 listw = nb2listw(bound_4nnb), Durbin = T)
+
+
+
+
+
+### PARTIE 3
+
+## Daa preparation for the gravity model
+new_data <- merge(migration_data, my_X, by.x = "orig", by.y = "CountryCode", suffixes = c("","_O"))
+new_data <- merge(new_data, my_X, by.x = "dest", by.y = "CountryCode", suffixes = c("_O","_D"))
+
+new_data_clean <- new_data[new_data$orig %in% full_data$iso3,]
+
+new_data_clean <- new_data_clean[new_data_clean$dest %in% full_data$iso3,]
+
+new_data_clean <- new_data_clean[, -c(3, 4, 5, 7, 8, 9)]
+
+bound_data <- read_sf("data/world-administrative-boundaries.geojson") # besoin pour la boucle
+
+
+N <- nrow(new_data_clean)
+g <- numeric(N)
+dist_mat <- st_distance(bound_data, bound_data, by_element = F)
+dimnames(dist_mat) <- list(bound_data$iso3, bound_data$iso3)
+new_data_clean$dist <- 0
+
+for (k in 1:nrow(new_data_clean)) {
+  new_data_clean[k, "dist"] <- dist_mat[new_data_clean[k, "dest"], new_data_clean[k, "orig"]]
+}
+
+
+save(new_data_clean, file = "new_data_clean.RData")
+summary(new_data_clean)
+## Gravity model estimation 
+
+regressors_gm <- c("deflactor_O", "lifeexp_O", "GDPpercapita_UN_O", "population_O", 
+                   "FD_O", "politicalstability_O", "landlocked_O", "dummyEarthquake_O", "dummyStorm_O",
+                   "dummyFlood_O","Events_O", "Fatalities_O", "conflictpercapita_O", "vulnerability_O",
+                   "deflactor_D", "lifeexp_D", "GDPpercapita_UN_D", "population_D", 
+                   "FD_D", "politicalstability_D", "landlocked_D", "dummyEarthquake_D", "dummyStorm_D",
+                   "dummyFlood_D", "Events_D", "Fatalities_D", "conflictpercapita_D", "vulnerability_D")
+new_data_clean$dist <- as.numeric(new_data_clean$dist)
+
+fit_gm <- ddm(
+  dependent_variable = "da_min_open",
+  distance = "dist",
+  additional_regressors = regressors_gm,
+  code_origin = "orig",
+  code_destination = "dest",
+  robust = FALSE,
+  data = new_data_clean
+)
+
+
+summary(fit_gm)
+
+
+fit_gm <- ppml(
+  dependent_variable = "da_min_open",
+  distance = "dist",
+  additional_regressors = regressors_gm,
+  data = new_data_clean
+)
+
+summary(fit_gm)
+
+class(new_data_clean$dist)
