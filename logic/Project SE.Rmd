@@ -1,0 +1,621 @@
+---
+title: "Spatial Econometrics"
+author: "Lucas and Chérif"
+date: "2023-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning=FALSE)
+```
+
+# Spatial Econometrics Project
+
+```{r}
+
+library(sf)
+library(tidyverse)
+library("missForest")
+library(visdat)
+library(ggplot2)
+library(cartography)
+library(spdep)
+library(sfdep)
+library(spatialreg)
+library(stargazer)
+library(gravity)
+
+```
+
+### Data 
+
+- We are interested in this project on the migration flow. To do this, we need to choose one method among those proposed to estimate the migration flow. The one we have chosen is the demographic account minimization open. This method allows to have persons that can move to or from countries that are not in the input bilateral migrant stock tables.
+
+```{r}
+
+setwd(dir = "C:/Users/User/Desktop/Cherif/M2/spatial econometrics/spatial_econometrics-main")
+
+```
+
+### 1.2 Contours data 
+
+- Here we import the contour boundaries. 
+
+```{r}
+
+bound_data <- read_sf("data/world-administrative-boundaries.geojson")
+
+st_crs(bound_data)
+
+```
+
+- The inital geometry is as follow.
+
+```{r}
+
+plot(st_geometry(bound_data))
+
+```
+
+- We transform geometry to ESRI:54030 Robinson.
+
+```{r}
+
+transform_bound <- st_transform(bound_data, "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ")
+
+```
+
+- A plot of the new geometry.
+
+```{r}
+
+plot(st_geometry(bound_data), main="CRS ESRI:54030 Robinson")
+
+```
+
+### 1.3 Explanatory variables at country level
+
+- We should keep the variables considering in the project assignment.
+
+```{r}
+
+load("data/explanatory.RData")
+
+
+nom_vars <- c("CountryCode", "deflactor", "lifeexp", "dummyEarthquake", "population",
+              "dummyStorm", "GDPpercapita_UN", "FD", "conflictpercapita", "politicalstability", 
+              "landlocked", "vulnerability")
+
+my_X_clean <- my_X[,nom_vars]
+
+```
+
+- Potential issues of missing data.
+
+```{r}
+
+my_X_clean[, nom_vars[2:length(nom_vars)]] <- missForest(my_X_clean[, nom_vars[2:length(nom_vars)]])$ximp
+
+```
+
+- Visualize missing values.
+
+```{r}
+
+vis_miss(my_X_clean)
+
+```
+
+- Count missing values.
+
+```{r}
+
+sum(is.na(my_X_clean))
+
+```
+
+### 1.4 Explanatory variables at country-pair level
+
+- First we need to load the file pairs.RData and will be usefull for the Gravity Model.
+
+```{r}
+
+load("data/pairs.Rdata")
+
+```
+
+## 2 Emigration and immigration rates by country
+
+- We want to explain the emigration and immigration rates by country. 
+
+### Q1)
+
+```{r}
+
+migration_data <- read.csv(file = "data/bilat_mig.csv", header = TRUE)
+
+```
+
+- Data cleaning
+
+```{r}
+
+migration_data_rem <- migration_data[, c("year0", "orig", "dest", "da_min_open")]
+
+migration_data_rem <-migration_data_rem %>% filter(year0 == '2015')
+
+```
+
+- By origin = total in flow
+
+```{r}
+
+by_orig <- aggregate(migration_data_rem$da_min_open, by = list(Origin = migration_data_rem$dest), FUN = sum)
+
+by_orig <- rename(by_orig, "Total_in" = x, "CountryCode" = Origin)
+
+```
+
+- By destination = total out flow
+
+```{r}
+
+by_dest <- aggregate(migration_data_rem$da_min_open, by = list(Destination = migration_data_rem$orig), FUN = sum)
+by_dest <- rename(by_dest, "Total_out" = x, "CountryCode" = Destination)
+
+total_flows <- merge(by_dest, by_orig, by= "CountryCode")
+
+```
+
+### Q2) 
+
+- We want to merge the total in and out flows to the country and combine it with the contours data.
+
+```{r, include = FALSE}
+
+unique(total_flows$CountryCode)
+
+unique(my_X_clean$CountryCode)
+
+```
+
+```{r}
+
+total_flows$CountryCode[total_flows$CountryCode %in% c("AIA", "FLK", "GIB", "MSR", "SHN", "VGB")] <- "GBR"
+
+total_flows$CountryCode[total_flows$CountryCode %in% c("GLP", "GUF", "MTQ", "MYT", "REU", "SPM", "WLF")] <- "FRA"
+
+total_flows$CountryCode[total_flows$CountryCode %in% c("COK", "NIU", "TKL")] <- "NZL"
+
+total_flows$CountryCode[total_flows$CountryCode == "ESH"] <- "MAR"
+
+total_flows <- total_flows %>% group_by(CountryCode) %>% 
+  summarise(sum_in = sum(Total_in), sum_out = sum(Total_out), .groups = "drop") %>% 
+    as.data.frame()
+
+total_flows <- total_flows[!(total_flows$CountryCode == "NRU"),]
+
+my_X_clean <- my_X_clean[!(my_X_clean$CountryCode %in% c("MAF", "XKX", "CHI", "CUW","SXM", "IMN")),]
+
+exp_data <- merge(total_flows, my_X_clean, by = "CountryCode")
+
+sapply(bound_data, class)
+
+clean_bound <- bound_data %>% drop_na()
+
+length(unique(clean_bound$iso3))
+
+
+clean_bound$iso3[clean_bound$iso3 %in% c("AIA", "FLK", "GIB", "MSR", "SHN", "VGB", "IOT", "PCN")] <- "GBR"
+
+clean_bound$iso3[clean_bound$iso3 %in% c("GLP", "GUF", "MTQ", "MYT", "REU", "SPM", "WLF")] <- "FRA"
+
+clean_bound$iso3[clean_bound$iso3 %in% c("COK", "NIU", "TKL")] <- "NZL"
+
+clean_bound$iso3[clean_bound$iso3 == "ESH"] <- "MAR"
+clean_bound$iso3[clean_bound$iso3 == "TWN"] <- "CHN"
+clean_bound$iso3[clean_bound$iso3 == "NFK"] <- "AUS"
+
+clean_bound <- clean_bound[!(clean_bound$iso3 %in% c("VAT", "CCK","SJM", "NRU", "CXR")),]
+
+length(unique(clean_bound$iso3))
+
+exp_data <- rename(exp_data, "iso3" = CountryCode)
+
+full_data <- merge(exp_data, clean_bound, by = "iso3")
+
+length(unique(full_data$iso3))
+
+full_data$emigrates <- full_data$sum_out/full_data$population
+
+full_data$immigrates <- full_data$sum_in/full_data$population
+
+```
+
+- Correlation between the dependent variables and immigrate/emigrate.
+
+```{r}
+
+cor(full_data[, 4:14], full_data$emigrates)
+#cor(full_data[, 4:14], full_data$immigrates)
+#cor(full_data[, 4:14], full_data$lifeexp) #FD and GDPpercapita_UN
+#cor(full_data[, 4:14], full_data$dummystorm)
+
+```
+
+
+Yes we see sign differences with the variables vulnerability, gdppercapita, deflactor and conflicts. This makes sense since there is an inverse relationship between these variables. 
+
+- Plot of immigrate and emigrate 
+
+```{r}
+
+smry_emig <- data.frame(unclass(summary(full_data$emigrates)),
+                        check.names = FALSE)
+
+smry_immig <- data.frame(unclass(summary(full_data$immigrates)),
+                         check.names = FALSE)
+
+
+
+full_data$class_emig <- ifelse((full_data$emigrates >= 0 & full_data$emigrates < smry_emig[2,] ), "1",
+                               ifelse((full_data$emigrates > smry_emig[2,] & full_data$emigrates < smry_emig[3,] & full_data$emigrates > smry_emig[2,] ), "2",
+                                      ifelse((full_data$emigrates > smry_emig[3,] & full_data$emigrates  < smry_emig[4,]), "3", "4")))
+
+
+
+full_data$class_immig <- ifelse((full_data$immigrates >= 0 & full_data$immigrates < smry_immig[2,] ), "1",
+                                ifelse((full_data$immigrates > smry_immig[2,] & full_data$immigrates < smry_immig[3,] & full_data$immigrates > smry_immig[2,] ), "2",
+                                       ifelse((full_data$immigrates > smry_immig[3,] & full_data$immigrates  < smry_immig[4,]), "3", "4")))
+
+
+
+plot(st_geometry(full_data$geometry), lwd = 2, col=full_data$class_emig)
+legend("bottomleft", legend=c("> 0.0178", "[0.0084, 0.0178]", "[0.0040, 0.0084 ]", "[0.0000 , 0.0040] "),
+       fill=c("blue", "green", "red", "black"), title="Emigrates", cex=0.8)
+
+
+plot(st_geometry(full_data$geometry), lwd = 2, col=full_data$class_immig)
+legend("bottomleft", legend=c("> 0.0177", "[0.0052, 0.0177]", "[0.0009, 0.0052]", "[0.0000 , 0.0009] "),
+       fill=c("blue", "green", "red", "black"), title="Immigrates", cex=0.8)
+
+```
+
+```{r, include =FALSE}
+
+full_data$geo_point_2d[1]
+as.numeric(substr(full_data$geo_point_2d, 10,20))
+as.numeric(substr(full_data$geo_point_2d, 37,47))
+
+sort(full_data$iso3)
+
+unique(full_data$iso3)
+
+```
+
+- Weight matrix : We motivate the introduction of a weight matrix because the question of migration flow is a geographical one so it seems reasonable to think that the neighborhood of a given country, that is its neighboring countries, must have an impact on its migration flow.
+
+```{r}
+
+bound_geo <- st_geometry(full_data$geometry)
+bound_nb <- poly2nb(bound_geo)
+bound_cen <- st_coordinates(st_centroid(bound_geo))
+
+bound_4nnb <- knn2nb(knearneigh(bound_cen, 4))
+
+plot(bound_geo, lwd = 1)
+par(new=TRUE)
+plot(bound_4nnb, bound_cen,lwd=.2, col="blue", cex = .5)
+title("K = 4")
+
+
+```
+
+- Moran scatter plot
+
+```{r}
+
+moran.plot(full_data$immigrates, nb2listw(bound_4nnb),X_name = "Immigrates")
+
+```
+
+The middle east is very represented for countries with a high spatial autocorrelation concerning immigrates flow followed by South Korea.
+
+```{r}
+
+moran.plot(full_data$emigrates, nb2listw(bound_4nnb),X_name ="Emigrates")
+
+```
+
+New Zealand and Great Britain appear to be the countries with a high level of spatial autocorrelation concerning emigrates flow.
+
+- Moran test
+
+```{r}
+
+moran.test(full_data$immigrates, nb2listw(bound_4nnb))
+
+```
+
+We reject the null hypothesis, there is spatial autocorrelation at the level of 5%.
+
+```{r}
+
+moran.test(full_data$emigrates, nb2listw(bound_4nnb))
+
+```
+
+We also reject the null hypothesis, there is spatial autocorrelation at the level of 5%.
+
+## OLM Model 
+
+### First Model
+
+```{r}
+
+olm_1 <- lm(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+            GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+            vulnerability, data = full_data)
+
+summary(olm_1)
+
+```
+
+We see that a lot of variables are not significantly different from 0 at the level of 5%. The only variable which is is significant at this level is GDPpercapita_UN.
+
+Interpretation of the variable GDPpercapita_UN : if we increase the level of GDPpercapita_UN by one unit then the immigrates flow increase by 4.170e-07 unit.
+
+### Second Model
+
+
+```{r}
+
+olm_2 <- lm(emigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+              GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+              vulnerability, data = full_data)
+
+summary(olm_2)
+
+```
+
+At the level of 5% only three variables are significantly different from 0 : deflactor, lifeexp, FD and conflictpercapita_UN.
+
+Interpretation of the variable FD : if we increase the level of FD by one unit then the immigrates flow increase by -3.731e-02 unit.
+
+Interpretation of the variable conflictpercapita : if we increase the level of conflictpercapita by one unit then the immigrates flow increase by 3.846e+0.
+
+- Spatial autocorrelation of residuals : Test
+
+```{r}
+
+lm.morantest(olm_1, nb2listw(bound_4nnb))
+
+```
+
+There is the presence of spatial autocorrelation in the residuals.
+
+- Location of the countries by HH, HL, LL, LH.
+
+```{r}
+
+mp <- moran.plot(residuals(olm_1), nb2listw(bound_4nnb), pch = 19)
+
+index_class <- mp[, c("labels", "x", "wx")]
+
+index_class$class <- ifelse((index_class$x > 0 & index_class$wx > 0), "HH",
+                            ifelse((index_class$x < 0 & index_class$wx > 0), "LH",
+                                   ifelse((index_class$x > 0 & index_class$wx < 0), "HL", "LL")))
+
+full_data$labels <- seq(1, 228, 1)
+
+index_class$labels <- as.numeric(index_class$labels)
+
+color_data <- merge(full_data, index_class, by = "labels")
+
+color_data$class <- as.factor(color_data$class)
+
+plot(st_geometry(color_data$geometry), lwd = 2, col = color_data$class)
+legend("bottomleft", legend=c("HH", "HL", "LL", "LH"),
+       fill=c("black", "red", "blue", "green"), cex=0.8)
+
+
+```
+
+
+## Testing strategy
+
+We have already test for spatial autocorrelation in OLM model so we test it against SLX model.
+
+We see that only politicalstability is significant concerning the variable itself and the lag but the SLX model seems more interesting given the previous Moran test and the presence of a lag on politicalstability. We estimate a model with a lag on the dependent variable and the error term. 
+
+### Immigrate variable 
+
+- SLX Model
+
+```{r}
+
+slx_1 <- spatialreg::lmSLX(immigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                 GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                 vulnerability, data = full_data, 
+               listw = nb2listw(bound_4nnb))
+
+summary(slx_1)
+
+```
+
+
+- SEM Model
+
+Some preliminaries before starting the models.
+
+```{r}
+
+cor_test <- cor(select(full_data, deflactor, dummyEarthquake, dummyStorm, GDPpercapita_UN, conflictpercapita, politicalstability, population,
+                       FD, landlocked, vulnerability))
+det(cor_test)
+cor_test
+
+```
+
+```{r}
+
+sem_1 <- spatialreg::errorsarlm(immigrates ~ dummyEarthquake + deflactor + GDPpercapita_UN + politicalstability +
+                                landlocked + vulnerability + dummyStorm + FD + lifeexp, data = full_data, 
+                  listw = nb2listw(bound_4nnb))
+summary(sem_1)
+
+```
+
+The lamba coefficient is significant at the level alpha = 5%. 
+
+- LAG Model
+
+```{r}
+
+lagm_1 <- spatialreg::lagsarlm(immigrates ~ dummyEarthquake + deflactor + GDPpercapita_UN + politicalstability +
+                               landlocked + vulnerability + dummyStorm + FD + lifeexp, data = full_data, 
+                 listw = nb2listw(bound_4nnb))
+summary(lagm_1)
+
+```
+
+The pho coefficient is significant at the level alpha = 5%. We go now on the estimation of a SAC Model.
+
+- SAC Model
+
+```{r}
+
+sac_1 <- spatialreg::sacsarlm(immigrates ~ dummyEarthquake + deflactor + GDPpercapita_UN + politicalstability +
+                       landlocked + vulnerability + dummyStorm + FD + lifeexp, data = full_data, listw = nb2listw(bound_4nnb))	
+summary(sac_1)
+
+```
+
+Both pho and lambda coefficients are significant at the level alpha = 5%, we keep the SAC model.
+
+```{r}
+
+stargazer::stargazer(olm_1, slx_1, sem_1, lagm_1, sac_1, type = "html")
+
+```
+
+### Emigrate variable
+
+- SLX Model
+
+```{r}
+
+slx_2 <- spatialreg::lmSLX(emigrates ~ deflactor + lifeexp + dummyEarthquake + population + dummyStorm +
+                             GDPpercapita_UN + FD + conflictpercapita + politicalstability + landlocked +
+                             vulnerability, data = full_data, 
+                           listw = nb2listw(bound_4nnb))
+summary(slx_2)
+
+```
+
+- SEM Model
+
+```{r}
+
+sem_2 <- spatialreg::errorsarlm(emigrates ~ dummyEarthquake + deflactor + GDPpercapita_UN + politicalstability +
+                                  landlocked + vulnerability + dummyStorm + FD + lifeexp, data = full_data, 
+                                listw = nb2listw(bound_4nnb))
+summary(sem_2)
+
+```
+
+The lamba coefficient is significant at the level alpha = 5%. 
+
+- LAG Model
+
+```{r}
+
+lagm_2 <- spatialreg::lagsarlm(emigrates ~ dummyEarthquake + deflactor + GDPpercapita_UN + politicalstability +
+                                 landlocked + vulnerability + dummyStorm + FD + lifeexp, data = full_data, 
+                               listw = nb2listw(bound_4nnb))
+summary(lagm_2)
+
+```
+
+The pho coefficient is significant at the level alpha = 5%, We go now on the estimation of a SAC Model.
+
+```{r}
+
+sac_2 <- spatialreg::sacsarlm(immigrates ~ dummyEarthquake + deflactor + GDPpercapita_UN + politicalstability +
+                                landlocked + vulnerability + dummyStorm + FD + lifeexp, data = full_data, listw = nb2listw(bound_4nnb))	
+summary(sac_2)
+
+```
+
+Both pho and lambda coefficients are significant at the level alpha = 5%, we keep the SAC Model.
+
+```{r}
+
+stargazer::stargazer(olm_2, slx_2, sem_2, lagm_2, sac_2, type = "html")
+
+```
+
+## Gravity Model
+
+### Data preparation for the gravity model
+
+```{r}
+
+new_data <- merge(migration_data, my_X, by.x = "orig", by.y = "CountryCode", suffixes = c("","_O"))
+new_data <- merge(new_data, my_X, by.x = "dest", by.y = "CountryCode", suffixes = c("_O","_D"))
+
+new_data_clean <- new_data[new_data$orig %in% full_data$iso3,]
+
+new_data_clean <- new_data_clean[new_data_clean$dest %in% full_data$iso3,]
+
+N <- nrow(new_data_clean)
+g <- numeric(N)
+dist_mat <- st_distance(bound_data, bound_data, by_element = F)
+dimnames(dist_mat) <- list(bound_data$iso3, bound_data$iso3)
+new_data_clean$dist <- 0
+
+for (k in 1:nrow(new_data_clean)) {
+  new_data_clean[k, "dist"] <- dist_mat[new_data_clean[k, "dest"], new_data_clean[k, "orig"]]
+}
+
+
+save(new_data_clean, file = "new_data_clean.RData")
+summary(new_data_clean)
+
+```
+
+### Gravity Model Estimation 
+
+```{r}
+
+new_data_clean <- new_data_clean[,-c(3, 4, 5, 6, 8, 9)]
+
+regressors_gm1 <- c("GDPpercapita_UN_O", "population_O", 
+                    "FD_O", "politicalstability_O", "landlocked_O", "dummyEarthquake_O", "dummyStorm_O",
+                    "dummyFlood_O","Events_O", "Fatalities_O", "conflictpercapita_O", "GDPpercapita_UN_D", "population_D", 
+                    "FD_D", "politicalstability_D", "landlocked_D", "dummyEarthquake_D", "dummyStorm_D",
+                    "dummyFlood_D", "Events_D", "Fatalities_D", "conflictpercapita_D")
+
+
+fit_gm <- ppml(
+  dependent_variable = "da_min_open",
+  distance = "dist",
+  additional_regressors = regressors_gm1,
+  data = new_data_clean
+)
+
+summary(fit_gm)
+
+```
+
+We see that all coefficients are significant at the level alpha = 5% except for the variables Fatalities_D and dummyEarthquake_D 
+however we have no AIC to interpret.
+
+We now investigate the presence of autocorrelation in the residuals when aggregated by origin and destination level. To do so, we need
+
+```{r}
+lm.morantest(fit_gm, nb2listw(bound_4nnb))
+length(nb2listw(bound_4nnb))
+
+```
+
